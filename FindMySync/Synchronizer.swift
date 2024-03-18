@@ -101,79 +101,59 @@ class Synchronizer {
         var haConfig = ""
         
         if #available(macOS 14.4, *) {
-            let task = Process()
-            task.launchPath = "/usr/bin/security"
-            task.arguments = ["find-generic-password", "-l", "BeaconStore", "-g"]
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                        kSecAttrLabel as String: "BeaconStore",
+                                        kSecMatchLimit as String: kSecMatchLimitOne,
+                                        kSecReturnAttributes as String: true,
+                                        kSecReturnData as String: true]
 
-            let pipe = Pipe()
-            task.standardOutput = pipe
-            task.launch()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-            if let result = String(data: data, encoding: .utf8) {
-                var gena = result.components(separatedBy: "\"gena\"<blob>=")
-                gena = gena[1].components(separatedBy: "  \"")
-
-                if gena[0].count > 0 {
-                    var genaHexString = gena[0]
-
-                    genaHexString = genaHexString.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .replacingOccurrences(of: "0x", with: "")
-
-                    var data = Data(capacity: genaHexString.count / 2)
-                    var index = genaHexString.startIndex
-
-                    while index < genaHexString.endIndex {
-                        let byteString = genaHexString[index..<genaHexString.index(index, offsetBy: 2)]
-                        let byte = UInt8(byteString, radix: 16)!
-                        data.append(byte)
-                        index = genaHexString.index(index, offsetBy: 2)
-                    }
-
-                    let key = SymmetricKey(data: data)
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            if status == errSecSuccess, let existingItem = item {
+                if let keyData = existingItem[kSecValueData as String] as? Data {
+                    let key = SymmetricKey(data: keyData)
                     
                     func decryptRecord(url: URL, key: SymmetricKey) throws -> [String: Any]? {
                         do {
                             let data = try Data(contentsOf: url)
-
+                            
                             if let plist = try PropertyListSerialization.propertyList(
                                 from: data,
                                 options: [],
                                 format: nil
                             ) as? [Any] {
                                 if plist.count >= 3,
-                                    let nonceData = plist[0] as? Data,
-                                    let tagData = plist[1] as? Data,
-                                    let ciphertextData = plist[2] as? Data {
+                                   let nonceData = plist[0] as? Data,
+                                   let tagData = plist[1] as? Data,
+                                   let ciphertextData = plist[2] as? Data {
                                     
-                                        let sealedBox = try AES.GCM.SealedBox(
-                                                nonce: AES.GCM.Nonce(data: nonceData),
-                                                ciphertext: ciphertextData,
-                                                tag: tagData
-                                        )
-
-                                        let decryptedData = try AES.GCM.open(sealedBox, using: key)
-
-                                        if let decryptedPlist = try PropertyListSerialization.propertyList(
-                                            from: decryptedData,
-                                            options: [],
-                                            format: nil
-                                        ) as? [String: Any] {
-                                            return decryptedPlist
-                                        }
-
+                                    let sealedBox = try AES.GCM.SealedBox(
+                                        nonce: AES.GCM.Nonce(data: nonceData),
+                                        ciphertext: ciphertextData,
+                                        tag: tagData
+                                    )
+                                    
+                                    let decryptedData = try AES.GCM.open(sealedBox, using: key)
+                                    
+                                    if let decryptedPlist = try PropertyListSerialization.propertyList(
+                                        from: decryptedData,
+                                        options: [],
+                                        format: nil
+                                    ) as? [String: Any] {
+                                        return decryptedPlist
+                                    }
+                                    
                                 }
-
+                                
                             }
                         } catch {
                             print("Decrypt \(url) error:", error)
                         }
-
+                        
                         return nil
                     }
                     
-
+                    
                     let searchpartydUrl = FileManager.default.urls(
                         for: .libraryDirectory, in: .userDomainMask
                     ).first!.appendingPathComponent("com.apple.icloud.searchpartyd")
@@ -181,11 +161,10 @@ class Synchronizer {
                     let beaconNamingRecordUrl = searchpartydUrl.appendingPathComponent("BeaconNamingRecord")
                     let beaconEstimatedLocationUrl = searchpartydUrl.appendingPathComponent(
                         "BeaconEstimatedLocation")
-                    let sharedBeaconsUrl = searchpartydUrl.appendingPathComponent("SharedBeacons")
-
-
+                    let sharedBeaconsUrl = searchpartydUrl.appendingPathComponent("OwnedBeacons")
+                    
                     let fileManager = FileManager.default
-
+                    
                     var beaconNames = [String: String]()
                     var sharedBeaconMap = [String: String]()
                     var beacons = [String: Beacon]()
@@ -202,9 +181,9 @@ class Synchronizer {
                                     if let decryptedData = try decryptRecord(
                                         url: namingItem, key: key)
                                     {
-
+                                        
                                         if let identifier = decryptedData["associatedBeacon"] as? String,
-                                            let name = decryptedData["name"] as? String
+                                           let name = decryptedData["name"] as? String
                                         {
                                             beaconNames[identifier] = name
                                         }
@@ -228,7 +207,7 @@ class Synchronizer {
                                 }
                             }
                         }
-
+                        
                         
                         let beaconEstimatedLocations = try fileManager.contentsOfDirectory(
                             at: beaconEstimatedLocationUrl, includingPropertiesForKeys: nil)
@@ -241,13 +220,13 @@ class Synchronizer {
                                     if let decryptedData = try decryptRecord(
                                         url: locationItem, key: key)
                                     {
-
-
+                                        
+                                        
                                         if let identifier = decryptedData["associatedBeacon"] as? String,
-                                            let latitude = decryptedData["latitude"],
-                                            let longitude = decryptedData["longitude"],
-                                            let timestamp = decryptedData["timestamp"],
-                                            let horizontalAccuracy = decryptedData["horizontalAccuracy"]
+                                           let latitude = decryptedData["latitude"],
+                                           let longitude = decryptedData["longitude"],
+                                           let timestamp = decryptedData["timestamp"],
+                                           let horizontalAccuracy = decryptedData["horizontalAccuracy"]
                                         {
                                             var id = identifier
                                             
@@ -259,22 +238,22 @@ class Synchronizer {
                                                 identifier: id,
                                                 name: id,
                                                 accuracy: NSNumber(value: horizontalAccuracy as! Double),
-                                                longitude: NSNumber(value: longitude as! Double), 
+                                                longitude: NSNumber(value: longitude as! Double),
                                                 latitude: NSNumber(value: latitude as! Double)
                                             )
-
+                                            
                                             if let timestamp = timestamp as? Date
                                             {
                                                 beacon.timestamp = timestamp
                                             }
-
+                                            
                                             if let name = beaconNames[id] {
                                                 beacon.name = name
                                             }
-
-
-
-
+                                            
+                                            
+                                            
+                                            
                                             if let existedBeacon = beacons[id] {
                                                 if let existedBeaconTimestamp = existedBeacon.timestamp {
                                                     if let beaconTimestamp = beacon.timestamp {
@@ -295,7 +274,7 @@ class Synchronizer {
                             }
                         }
                         
-//                        print(beacons)
+                        //                        print(beacons)
                         
                         for (identifier, beacon) in beacons {
                             print(identifier, beacon)
@@ -308,7 +287,7 @@ class Synchronizer {
                                 battery: -1,
                                 address: ""
                             )
-
+                            
                             if generate_config {
                                 haConfig += """
                                     findmy_\(identifier.replacingOccurrences(of: "-", with: "")):
@@ -317,24 +296,24 @@ class Synchronizer {
                                       icon:
                                       picture:
                                       track: true
-
+                                    
                                     """
                             }
                             
                             
                             log(
                                 
-                                "- Item \"" + beacon.name + "\" - " + identifier + "\n" + 
+                                "- Item \"" + beacon.name + "\" - " + identifier + "\n" +
                                 "- - Location: "
                                 + beacon.latitude
                                     .stringValue
-                                    + ", "
+                                + ", "
                                 + beacon.longitude
                                     .stringValue
-                                    + " (Accuracy "
+                                + " (Accuracy "
                                 + beacon.accuracy
                                     .stringValue
-                                    + ")")
+                                + ")")
                         }
                     } catch {
                         log("Cannot parse beacon record: " + error.localizedDescription)
@@ -342,8 +321,6 @@ class Synchronizer {
                     }
                 }
             }
-            
-            
         } else {
             let items: Bool = UserDefaults.standard.bool(forKey: "sources_items")
             let devices: Bool = UserDefaults.standard.bool(forKey: "sources_devices")
